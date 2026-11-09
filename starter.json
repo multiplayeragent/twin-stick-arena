@@ -1,0 +1,21 @@
+{
+  "name": "Twin-Stick Arena",
+  "genre": "shooter",
+  "dim": "2D",
+  "mode": "Versus",
+  "players": "2–8",
+  "hook": "Top-down deathmatch. First to 10 wins.",
+  "how": "Move with one stick and aim with the other. Walls block shots. You respawn three seconds after you go down. First to 10 kills wins, or the most kills when the clock runs out.",
+  "controls": "WASD and mouse, or two thumb sticks",
+  "uses": [
+    ["Leaderboard", "The most kills each player got in one match."],
+    ["Host-run rounds", "The host's browser keeps score, runs the clock and starts the next match; if it leaves, the next player takes over."],
+    ["Bots", "Bots fill the arena until enough people join."],
+    ["Live sync", "Every player and every bullet shows up for everyone at once."]
+  ],
+  "ideas": [
+    "Add a shotgun pickup in the center",
+    "Split players into two teams",
+    "Add a safe zone that shrinks"
+  ]
+}

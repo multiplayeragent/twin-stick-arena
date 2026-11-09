@@ -1,0 +1,650 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Twin-Stick Arena</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; overscroll-behavior: none; background: #070914; }
+  body { font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; color: #eef2ff; user-select: none; -webkit-user-select: none; }
+  canvas { display: block; width: 100vw; height: 100vh; height: 100dvh; touch-action: none; cursor: crosshair; }
+  .hud { position: fixed; pointer-events: none; text-shadow: 0 1px 3px #000c; }
+  #kills { top: max(12px, env(safe-area-inset-top)); left: 14px; font-weight: 800; font-size: 22px; line-height: 1.1; }
+  #kills small { display: block; font-size: 13px; font-weight: 600; opacity: .7; }
+  #clock { top: max(12px, env(safe-area-inset-top)); left: 50%; transform: translateX(-50%); font: 800 22px system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+  #top { top: max(12px, env(safe-area-inset-top)); right: 14px; font-size: 13px; width: 150px; }
+  #top div { display: flex; justify-content: space-between; gap: 10px; } #top .me { color: #ffd166; font-weight: 700; }
+  #feed { top: calc(max(12px, env(safe-area-inset-top)) + 120px); right: 14px; font-size: 12px; text-align: right; opacity: .9; }
+  #feed div { margin-top: 3px; } #feed b { font-weight: 700; }
+  #msg { top: 34%; left: 0; right: 0; text-align: center; font-size: 30px; font-weight: 800; }
+  #msg small { display: block; font-size: 15px; font-weight: 600; opacity: .8; }
+  #hint { bottom: calc(max(14px, env(safe-area-inset-bottom)) + 26px); left: 0; right: 0; text-align: center; font-size: 14px; opacity: .85; }
+  #net { bottom: max(10px, env(safe-area-inset-bottom)); left: 14px; font-size: 12px; opacity: .7; }
+  #over { position: fixed; inset: 0; display: grid; place-items: center; background: #070914b0; }
+  #over[hidden], .stick[hidden] { display: none; }
+  .card { width: min(360px, 90vw); max-height: 86vh; overflow: auto; padding: 20px; border-radius: 16px; background: #131833; border: 1px solid #ffffff26; text-align: center; }
+  .card h2 { margin: 0 0 4px; font-size: 26px; } .card h3 { margin: 14px 0 4px; font-size: 13px; color: #4cc9f0; text-align: left; }
+  .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; }
+  .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.me { color: #ffd166; font-weight: 700; }
+  .card p { margin: 10px 0 0; font-size: 13px; opacity: .7; }
+  button.go { width: 100%; min-height: 48px; margin-top: 16px; border: 0; border-radius: 12px; background: #4cc9f0; color: #061520; font: 800 17px system-ui, sans-serif; cursor: pointer; }
+  .stick { position: fixed; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%; border: 2px solid #ffffff55; background: #ffffff12; pointer-events: none; }
+  .stick i { position: absolute; left: 34px; top: 34px; width: 52px; height: 52px; border-radius: 50%; background: #ffffff70; }
+  @media (max-width: 640px) { #top { width: 120px; font-size: 12px; } #clock { top: calc(max(12px, env(safe-area-inset-top)) + 48px); left: 14px; transform: none; font-size: 16px; } }
+</style>
+<script src="https://cdn.multiplayeragent.com/sdk/mp.global.js"></script>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div class="hud" id="kills"></div>
+<div class="hud" id="clock"></div>
+<div class="hud" id="top"></div>
+<div class="hud" id="feed"></div>
+<div class="hud" id="msg"></div>
+<div class="hud" id="hint"></div>
+<div class="hud" id="net">Connecting…</div>
+<div class="stick" id="stickMove" hidden><i></i></div>
+<div class="stick" id="stickAim" hidden><i></i></div>
+<div id="over" hidden><div class="card">
+  <h2 id="overTitle"></h2><div id="overSub"></div>
+  <h3>This match</h3><ol id="results"></ol>
+  <h3>Most kills in a match</h3><ol id="board"><li>Loading…</li></ol>
+  <button class="go" id="again">Play again</button><p id="next"></p>
+</div></div>
+<script>
+/* ═══ TWIN-STICK ARENA · a Multiplayer Agent starter ══════════════════════════════════
+ * Top-down deathmatch. First to 10 wins. Versus, 2–8 players; bots fill empty seats.
+ *
+ * WHERE THINGS ARE (search for the "── " headers):
+ *   CONFIG ........ match length, speeds, damage, bots
+ *   MAP ........... the walls and spawn points, plus wall collision and line of sight
+ *   CONNECTION .... MP_CONNECT, joining, the offline room, who is host
+ *   BULLETS ....... bullets every screen flies, and who decides a hit
+ *   MATCH (HOST) .. the match (scores, clock, winner, restart) and the bots. Only the host writes these.
+ *   ME ............ moving, aiming, shooting, getting hit, respawning. Each player writes its own.
+ *   DRAW .......... camera, floor, walls, fighters, bullets, sparks
+ *   HUD & RESULTS . kills, clock, scoreboard, kill feed, results, leaderboard
+ *   INPUT ......... WASD + mouse, and twin thumb sticks on touch
+ *
+ * HOW THE MULTIPLAYER WORKS (a relay room: no server code):
+ *   - Each player writes its OWN entity: `p` (one packed JSON field: x, y, aim, hp, dead,
+ *     shield) about 12 times a second, `hb` (heartbeat) once a second, `n`/`c` (name, color) once.
+ *   - Shots are events: "shot" {x, y, a}. Every screen flies every bullet the same way.
+ *   - A HIT IS THE VICTIM'S OWN FACT: only you check bullets against yourself, take the damage
+ *     off your own hp, and when it reaches 0 you send "down" {v: you, by: shooter}. Being shot
+ *     is decided on the screen of the one who could dodge it. (The host does this for bots.)
+ *     On every other screen a bullet just stops at whoever it touches: a spark, no damage.
+ *   - The HOST is the lowest sessionId among live players (heartbeat seen in the last 3s),
+ *     worked out every frame. Only the host writes the shared fields `match` {id, v, phase,
+ *     endsAt, scores, names, winner} and `bots`. It counts a kill when it hears "down",
+ *     ends the match at 10 kills or when the clock runs out, and starts the next one by
+ *     bumping match.id. A new host adopts both fields and carries on.
+ *   - Bot shots go out batched, 10 times a second: "shots" {list: [[bot, x, y, a], ...]}.
+ *   - ?attract plays offline with bots only (the preview video is recorded from it).
+ *   - Leaderboard "kills": each player's most kills in one match, shown on the results card.
+ */
+
+// ── CONFIG ──────────────────────────────────────────────────────────────────────────
+const CONFIG = {
+  winKills: 10,        // first to this many kills wins the match
+  matchMs: 180000,     // ... or the most kills when the clock runs out
+  resultsMs: 9000,     // ms the results show before the next match starts
+  seats: 6,            // bots fill the arena up to this many fighters
+  hp: 100,             // health
+  radius: 20,          // fighter size, px
+  speed: 270,          // px/s
+  fireEvery: 0.14,     // seconds between shots while the trigger is held
+  bulletSpeed: 950,    // px/s
+  bulletLife: 1.0,     // seconds before a bullet fizzles
+  damage: 20,          // health one bullet takes
+  respawnMs: 3000,     // ms you stay down
+  shieldMs: 1500,      // ms nobody can hurt you after you respawn
+  botAim: 0.2,         // radians a bot's aim wanders
+  botFireEvery: 0.36,  // seconds between a bot's shots (people can shoot faster)
+  botReact: 0.55,      // seconds a bot waits before shooting at someone new
+  botRange: 620,       // px: bots only pick fights this close
+  board: "kills",      // leaderboard name
+};
+const BOT_NAMES = ["Blaze", "Viper", "Nova", "Rex", "Kilo", "Jinx", "Bolt", "Echo"];
+const COLORS = ["#ff5d73", "#4cc9f0", "#ffd166", "#06d6a0", "#c77dff", "#ff9f1c", "#f15bb5", "#9ef01a"];
+
+// ── MAP ─────────────────────────────────────────────────────────────────────────────
+// Walls are [x, y, width, height] in world px. They block fighters and bullets.
+const MAP = {
+  w: 1360, h: 850,
+  walls: [
+    [629, 387, 102, 76],                                              // the middle block
+    [306, 170, 196, 32], [858, 170, 196, 32], [306, 648, 196, 32], [858, 648, 196, 32],   // long bars
+    [187, 340, 32, 170], [1141, 340, 32, 170],                        // side posts
+    [510, 280, 32, 102], [818, 280, 32, 102], [510, 468, 32, 102], [818, 468, 32, 102],   // pillars around the middle
+    [119, 102, 77, 32], [1164, 102, 77, 32], [119, 716, 77, 32], [1164, 716, 77, 32],     // corner cover
+  ],
+};
+const SPAWNS = [[80, 60], [680, 75], [1280, 60], [80, 425], [1280, 425], [80, 790], [680, 775], [1280, 790]];
+const R = CONFIG.radius;
+const inWall = (x, y, pad = 0) => MAP.walls.some(([wx, wy, ww, wh]) => x > wx - pad && x < wx + ww + pad && y > wy - pad && y < wy + wh + pad);
+/** Push a circle out of every wall and keep it inside the map. */
+function pushOut(f) {
+  for (const [wx, wy, ww, wh] of MAP.walls) {
+    const cx = Math.max(wx, Math.min(f.x, wx + ww)), cy = Math.max(wy, Math.min(f.y, wy + wh)), dx = f.x - cx, dy = f.y - cy, d = Math.hypot(dx, dy);
+    if (d < R && d > 0.001) { f.x = cx + dx / d * R; f.y = cy + dy / d * R; }
+    else if (d <= 0.001) f.y = f.y < wy + wh / 2 ? wy - R : wy + wh + R;
+  }
+  f.x = Math.max(R, Math.min(MAP.w - R, f.x)); f.y = Math.max(R, Math.min(MAP.h - R, f.y));
+}
+/** True when nothing blocks the straight line from a to b. */
+function canSee(a, b) {
+  const d = Math.hypot(b.x - a.x, b.y - a.y), n = Math.ceil(d / 16);
+  for (let i = 1; i < n; i++) if (inWall(a.x + (b.x - a.x) * i / n, a.y + (b.y - a.y) * i / n)) return false;
+  return true;
+}
+
+// ── CONNECTION ──────────────────────────────────────────────────────────────────────
+// The builder fills these in for this game. Downloaded from GitHub? Put your own pk_ key here.
+const MP_CONNECT = {
+  key: 'pk_REPLACE_ME',
+  room: 'twin-stick-arena',
+  endpoint: 'wss://live.multiplayeragent.com',
+  apiUrl: 'https://api.multiplayeragent.com',
+};
+const ATTRACT = new URLSearchParams(location.search).has("attract");
+
+/** Same shape as the SDK client, kept in this tab: offline play and ?attract. */
+function localRoom() {
+  const id = "local", state = { entities: { players: { [id]: {} } }, shared: {} }, subs = [];
+  let queued = false;
+  const emit = () => { if (!queued) { queued = true; queueMicrotask(() => { queued = false; subs.forEach((f) => f(state)); }); } };
+  const put = (o, k, v) => { if (typeof k === "object") Object.assign(o, k); else o[k] = v; emit(); };
+  return {
+    sessionId: id, state, offline: true,
+    me: { set: (k, v) => put(state.entities.players[id], k, v) },
+    setShared: (k, v) => put(state.shared, k, v),
+    onState: (f) => { subs.push(f); f(state); }, onJoin() {}, onLeave() {}, on() {}, send() {},
+    onDisconnect() {}, onReconnect() {}, leave: async () => {},
+  };
+}
+async function connect() {
+  if (ATTRACT || typeof MP === "undefined") return localRoom();
+  try {
+    const mp = await Promise.race([MP.join({ ...MP_CONNECT }), new Promise((_, no) => setTimeout(() => no(new Error("timed out")), 10000))]);
+    window.mp = mp; // the builder calls window.mp.leave() when the page closes
+    return mp;
+  } catch (e) {
+    console.warn("Playing offline:", e && e.message);
+    return localRoom();
+  }
+}
+const parse = (v, fb) => { if (typeof v !== "string") return fb; try { return JSON.parse(v); } catch { return fb; } };
+const parsed = new Map();
+/** A JSON value from state, parsed once per change (read-only: never mutate what this returns). */
+function parseOnce(key, raw, fallback) {
+  const c = parsed.get(key);
+  if (c && c.raw === raw) return c.v;
+  const v = parse(raw, fallback); parsed.set(key, { raw, v }); return v;
+}
+let net = null, S = { entities: { players: {} }, shared: {} };
+const seenHb = new Map();
+/** Players whose heartbeat moved in the last 3s (plus us), sorted by sessionId. */
+function livePlayers() {
+  const now = performance.now(), out = [];
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    const s = seenHb.get(id);
+    if (!s || s.hb !== p.hb) seenHb.set(id, { hb: p.hb, at: now });
+    if (id === net.sessionId || now - seenHb.get(id).at < 3000) out.push(id);
+  }
+  return out.sort();
+}
+const isHost = () => livePlayers()[0] === net.sessionId;
+
+// ── BULLETS ─────────────────────────────────────────────────────────────────────────
+const bullets = [], sparks = [];
+function addBullet(owner, x, y, a) {
+  const f = fighters().find((o) => o.id === owner);
+  bullets.push({ owner, x, y, a, life: CONFIG.bulletLife, color: f ? f.color : "#fff" });
+  const v = views.get(owner); if (v) v.firedAt = performance.now();
+}
+function burst(x, y, color, n, speed = 220, size = 4) {
+  for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, s = speed * (0.3 + Math.random()); sparks.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s, life: 0.3 + Math.random() * 0.4, color, size }); }
+}
+/** Move every bullet. Walls stop them. Who they hurt is decided by the one they hit. */
+function stepBullets(dt) {
+  const all = fighters().filter((f) => !f.dead);
+  for (let i = bullets.length - 1; i >= 0; i--) {
+    const b = bullets[i];
+    let gone = (b.life -= dt) <= 0;
+    for (let s = 0; s < 2 && !gone; s++) { // two half-steps so fast bullets can't skip a thin wall
+      b.x += Math.cos(b.a) * CONFIG.bulletSpeed * dt / 2; b.y += Math.sin(b.a) * CONFIG.bulletSpeed * dt / 2;
+      if (inWall(b.x, b.y) || b.x < 0 || b.y < 0 || b.x > MAP.w || b.y > MAP.h) { burst(b.x, b.y, "#9fb4ff", 4, 120, 3); gone = true; break; }
+      for (const f of all) {
+        if (f.id === b.owner || (b.x - f.x) ** 2 + (b.y - f.y) ** 2 > (R + 4) ** 2) continue;
+        gone = true; burst(b.x, b.y, f.color, 6, 160, 3);
+        if (f.mine) takeHit(b.owner);                        // me: my own fact
+        else if (f.bot && host.acting) hitBot(f.id, b.owner); // a bot: the host decides
+        else if (b.owner === net.sessionId) sfx("tick"); // someone else: just a spark here (and a tick if it was my shot)
+        break;
+      }
+    }
+    if (gone) bullets.splice(i, 1);
+  }
+  for (let i = sparks.length - 1; i >= 0; i--) {
+    const p = sparks[i]; p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vx *= 0.92; p.vy *= 0.92;
+    if (p.life <= 0) sparks.splice(i, 1);
+  }
+}
+
+// ── MATCH (HOST) ────────────────────────────────────────────────────────────────────
+const host = { acting: false, last: null, bots: new Map(), lastBots: 0, lastShots: 0, shots: [], again: false };
+/** The match as state has it, or the host's own newer write that hasn't come back yet. `v` only goes up. */
+function match() {
+  const m = parseOnce("match", S.shared.match, null);
+  return host.last && isHost() && (!m || host.last.v > m.v) ? host.last : m;
+}
+function writeMatch(m) { m = { ...m, v: (match()?.v ?? 0) + 1 }; host.last = m; net.setShared("match", JSON.stringify(m)); return m; }
+const newMatch = (id) => ({ id, phase: "play", endsAt: Date.now() + CONFIG.matchMs, scores: {}, names: {}, winner: null });
+const botList = () => (host.acting ? [...host.bots.values()] : parseOnce("bots", S.shared.bots, []));
+const nameOf = (id) => (fighters().find((f) => f.id === id) || {}).name || match()?.names?.[id] || "Someone";
+/** The id with the most kills, or null on a tie (a tie is a draw, never a win). */
+function leader(scores) {
+  const top = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  return top.length && (top.length === 1 || top[0][1] > top[1][1]) ? top[0][0] : null;
+}
+/** A "down" reached the host: `by` scores, and maybe wins. */
+function scoreKill(by, victim) {
+  const m = match();
+  if (!m || m.phase !== "play" || !by || by === victim) return;
+  const scores = { ...m.scores, [by]: (m.scores[by] || 0) + 1 }, names = { ...m.names, [by]: nameOf(by), [victim]: nameOf(victim) };
+  const won = scores[by] >= CONFIG.winKills;
+  writeMatch({ ...m, scores, names, ...(won ? { phase: "over", winner: by, endsAt: Date.now() + CONFIG.resultsMs } : {}) });
+}
+function adopt() {
+  host.acting = true; host.last = null; host.bots.clear();
+  for (const b of parseOnce("bots", S.shared.bots, [])) host.bots.set(b.id, { ...b, cd: 0, target: null, retargetAt: 0, seenAt: 0, wp: null, respawnAt: Date.now() + CONFIG.respawnMs, seed: Math.random() * 9 });
+}
+/** Bots fill the arena up to CONFIG.seats; one leaves when a person joins. A bot never wears a person's color. */
+function fitBots() {
+  const humans = livePlayers().filter((id) => !(ATTRACT && id === net.sessionId)).length;
+  const want = Math.max(0, CONFIG.seats - humans);
+  const people = new Set(fighters().filter((f) => !f.bot).map((f) => f.color));
+  for (const b of host.bots.values()) if (people.has(b.color)) { const used = new Set(fighters().map((f) => f.color)); b.color = COLORS.find((c) => !used.has(c)) || b.color; }
+  while (host.bots.size > want) host.bots.delete([...host.bots.keys()].pop());
+  while (host.bots.size < want) {
+    const taken = new Set(fighters().map((f) => f.color)), names = new Set(fighters().map((f) => f.name));
+    const id = "b" + Math.random().toString(36).slice(2, 6), at = spawnPoint(id);
+    host.bots.set(id, { id, name: BOT_NAMES.find((n) => !names.has(n)) || "Bot", color: COLORS.find((c) => !taken.has(c)) || "#ccc",
+      x: at.x, y: at.y, a: 0, hp: CONFIG.hp, dead: 0, shield: 1, shieldUntil: Date.now() + CONFIG.shieldMs, cd: 0, target: null, retargetAt: 0, seenAt: 0, wp: null, seed: Math.random() * 9 });
+  }
+}
+/** Someone's bullet hit a bot (on the host's screen). */
+function hitBot(id, by) {
+  const b = host.bots.get(id);
+  if (!b || b.dead || Date.now() < b.shieldUntil) return;
+  b.hp -= CONFIG.damage;
+  if (b.hp <= 0) { Object.assign(b, { hp: 0, dead: 1, respawnAt: Date.now() + CONFIG.respawnMs }); net.send("down", { v: id, by }); onDown(id, by); }
+}
+/** One bot's brain: find someone it can see, keep a fighting distance, strafe, shoot. */
+function stepBot(b, dt, all, t) {
+  if (b.dead) { if (t >= b.respawnAt) { const at = spawnPoint(b.id); Object.assign(b, { x: at.x, y: at.y, hp: CONFIG.hp, dead: 0, shieldUntil: t + CONFIG.shieldMs }); } return; }
+  b.shield = t < b.shieldUntil ? 1 : 0; b.cd -= dt;
+  if (t > b.retargetAt) {
+    b.retargetAt = t + 500;
+    let best = null, bd = Infinity;
+    for (const f of all) { if (f.id === b.id || f.dead) continue; const d = Math.hypot(f.x - b.x, f.y - b.y); if (d < bd && d < CONFIG.botRange && canSee(b, f)) { bd = d; best = f.id; } }
+    if (best !== b.target) { b.target = best; b.seenAt = t; }
+  }
+  const tg = all.find((f) => f.id === b.target && !f.dead);
+  let mx = 0, my = 0;
+  if (tg) {
+    const ang = Math.atan2(tg.y - b.y, tg.x - b.x), d = Math.hypot(tg.x - b.x, tg.y - b.y);
+    const close = d > 340 ? 1 : d < 170 ? -1 : 0, side = Math.sin(t / 650 + b.seed) > 0 ? 1 : -1;
+    mx = Math.cos(ang) * close + Math.cos(ang + Math.PI / 2) * side * 0.8; my = Math.sin(ang) * close + Math.sin(ang + Math.PI / 2) * side * 0.8;
+    const lead = d / CONFIG.bulletSpeed, aimAt = Math.atan2(tg.y + (tg.vy || 0) * lead - b.y, tg.x + (tg.vx || 0) * lead - b.x);
+    const diff = Math.atan2(Math.sin(aimAt - b.a), Math.cos(aimAt - b.a));
+    b.a += Math.max(-9 * dt, Math.min(9 * dt, diff));
+    if (Math.abs(diff) < 0.2 && b.cd <= 0 && t - b.seenAt > CONFIG.botReact * 1000 && match()?.phase === "play") {
+      b.cd = CONFIG.botFireEvery * (0.8 + Math.random() * 0.4);
+      const a = b.a + (Math.random() - 0.5) * 2 * CONFIG.botAim, x = b.x + Math.cos(b.a) * (R + 8), y = b.y + Math.sin(b.a) * (R + 8);
+      addBullet(b.id, x, y, a); host.shots.push([b.id, Math.round(x), Math.round(y), +a.toFixed(3)]);
+    }
+  } else {
+    if (!b.wp || Math.hypot(b.wp.x - b.x, b.wp.y - b.y) < 40) b.wp = openSpot();
+    const d = Math.hypot(b.wp.x - b.x, b.wp.y - b.y);
+    mx = (b.wp.x - b.x) / d; my = (b.wp.y - b.y) / d; b.a = Math.atan2(my, mx);
+  }
+  const len = Math.hypot(mx, my) || 1, px = b.x, py = b.y;
+  b.x += mx / len * CONFIG.speed * 0.82 * dt; b.y += my / len * CONFIG.speed * 0.82 * dt;
+  pushOut(b);
+  if (Math.hypot(b.x - px, b.y - py) < CONFIG.speed * 0.2 * dt) b.wp = openSpot(); // stuck on a wall: go somewhere else
+}
+function openSpot() { for (;;) { const p = { x: 60 + Math.random() * (MAP.w - 120), y: 60 + Math.random() * (MAP.h - 120) }; if (!inWall(p.x, p.y, R + 6)) return p; } }
+
+function hostTick(dt, now) {
+  if (!host.acting) adopt();
+  let m = match();
+  const t = Date.now();
+  if (!m) m = writeMatch(newMatch(1));
+  if (m.phase === "play" && t >= m.endsAt) m = writeMatch({ ...m, phase: "over", winner: leader(m.scores), endsAt: t + CONFIG.resultsMs });
+  if (m.phase === "over" && (t >= m.endsAt || host.again)) {
+    m = writeMatch(newMatch(m.id + 1));
+    for (const b of host.bots.values()) { const at = spawnPoint(b.id); Object.assign(b, { x: at.x, y: at.y, hp: CONFIG.hp, dead: 0, shieldUntil: t + CONFIG.shieldMs }); }
+  }
+  host.again = false;
+  fitBots();
+  const all = fighters();
+  for (const b of host.bots.values()) stepBot(b, dt, all, t);
+  if (now - host.lastBots > 100) { // ~10/s, one message for every bot
+    host.lastBots = now;
+    net.setShared("bots", JSON.stringify(botList().map((b) => ({ id: b.id, name: b.name, color: b.color, x: Math.round(b.x), y: Math.round(b.y), a: +b.a.toFixed(2), hp: b.hp, dead: b.dead, shield: b.shield }))));
+    if (host.shots.length) { net.send("shots", { list: host.shots.splice(0, 40) }); host.shots.length = 0; }
+  }
+}
+
+// ── ME ──────────────────────────────────────────────────────────────────────────────
+const myName = (() => { try { return localStorage.getItem("mpa-name") || ""; } catch { return ""; } })() ||
+  ["Swift", "Neon", "Lucky", "Turbo", "Pixel", "Rogue"][Math.floor(Math.random() * 6)] + " " + ["Fox", "Hawk", "Lynx", "Wolf", "Cobra", "Raven"][Math.floor(Math.random() * 6)];
+const me = { id: "", name: myName, color: COLORS[0], x: 0, y: 0, a: 0, vx: 0, vy: 0, hp: CONFIG.hp, dead: 0, shield: 0, shieldUntil: 0, respawnAt: 0,
+  cd: 0, mine: true, matchId: -1, lastSend: 0, hurtAt: 0, submittedFor: -1, brain: { id: "", cd: 0, a: 0, target: null, retargetAt: 0, seenAt: 0, wp: null, seed: 1 } };
+const input = { mx: 0, my: 0, fire: false };
+
+/** Everyone in the arena: live people from state, the bots, and me. Positions are what this screen shows. */
+function fighters() {
+  const out = [], live = new Set(livePlayers());
+  for (const [id, p] of Object.entries(S.entities.players || {})) {
+    if (id === net.sessionId || !live.has(id)) continue;
+    const q = parseOnce("p:" + id, p.p, null), v = views.get(id);
+    if (q) out.push({ id, name: p.n || "Player", color: p.c || "#ccc", ...q, ...(v ? { x: v.x, y: v.y, a: v.a } : {}) });
+  }
+  for (const b of botList()) { const v = views.get(b.id); out.push({ ...b, bot: true, ...(v && !host.acting ? { x: v.x, y: v.y, a: v.a } : {}) }); }
+  out.push(me);
+  return out;
+}
+/** The spawn point farthest from everyone else who is up. */
+function spawnPoint(id) {
+  const others = fighters().filter((f) => f.id !== id && !f.dead);
+  let best = SPAWNS[0], bd = -1;
+  for (const [x, y] of SPAWNS) { const d = Math.min(9999, ...others.map((f) => Math.hypot(f.x - x, f.y - y))) + Math.random() * 120; if (d > bd) { bd = d; best = [x, y]; } }
+  return { x: best[0], y: best[1] };
+}
+function respawn() {
+  const at = spawnPoint(me.id);
+  Object.assign(me, { x: at.x, y: at.y, hp: CONFIG.hp, dead: 0, shieldUntil: Date.now() + CONFIG.shieldMs });
+  publish(true);
+}
+/** A bullet from `by` touched me on MY screen: I take the damage, and say so if it was the last of me. */
+function takeHit(by) {
+  if (me.dead || Date.now() < me.shieldUntil) return;
+  me.hp -= CONFIG.damage; me.hurtAt = performance.now(); sfx("hurt");
+  if (me.hp <= 0) {
+    Object.assign(me, { hp: 0, dead: 1, respawnAt: Date.now() + CONFIG.respawnMs });
+    net.send("down", { v: me.id, by }); onDown(me.id, by);
+  }
+  publish(true);
+}
+/** Someone went down: a kill-feed line for everyone, and the score on the host. */
+function onDown(victim, by) {
+  feed.unshift({ by: nameOf(by), byColor: (fighters().find((f) => f.id === by) || {}).color || "#fff", v: nameOf(victim), at: performance.now() });
+  feed.length = Math.min(feed.length, 4);
+  if (by === me.id) sfx("kill");
+  if (host.acting) scoreKill(by, victim);
+}
+function shoot() {
+  me.cd = CONFIG.fireEvery;
+  const a = me.a + (Math.random() - 0.5) * 0.04, x = me.x + Math.cos(me.a) * (R + 8), y = me.y + Math.sin(me.a) * (R + 8);
+  addBullet(me.id, x, y, a); me.firedAt = performance.now();
+  net.send("shot", { x: Math.round(x), y: Math.round(y), a: +a.toFixed(3) });
+  sfx("shot");
+}
+function myTick(dt, m) {
+  const t = Date.now();
+  if (me.matchId !== m.id) { me.matchId = m.id; respawn(); $("over").hidden = true; }
+  if (me.dead) { if (t >= me.respawnAt) respawn(); publish(false); return; }
+  me.shield = t < me.shieldUntil ? 1 : 0;
+  if (ATTRACT) { // the preview plays you with the bot brain
+    Object.assign(me.brain, { id: me.id, x: me.x, y: me.y, a: me.a, dead: 0, shieldUntil: me.shieldUntil, hp: me.hp });
+    const shotsBefore = host.shots.length;
+    stepBot(me.brain, dt, fighters(), t);
+    host.shots.length = shotsBefore;
+    me.vx = (me.brain.x - me.x) / dt; me.vy = (me.brain.y - me.y) / dt; me.x = me.brain.x; me.y = me.brain.y; me.a = me.brain.a;
+  } else {
+    const len = Math.hypot(input.mx, input.my), k = len > 1 ? 1 / len : 1;
+    me.vx = input.mx * k * CONFIG.speed; me.vy = input.my * k * CONFIG.speed;
+    me.x += me.vx * dt; me.y += me.vy * dt; pushOut(me);
+    me.cd -= dt;
+    if (input.fire && me.cd <= 0 && m.phase === "play") shoot();
+  }
+  publish(false);
+}
+/** Two people in one color: the one with the higher sessionId picks a free color. */
+function fixColor() {
+  const others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
+  if (!others.some(([id, p]) => p.c === me.color && id < net.sessionId)) return;
+  const taken = new Set(others.map(([, p]) => p.c)), free = COLORS.find((c) => !taken.has(c));
+  if (free) { me.color = free; net.me.set("c", free); }
+}
+function publish(force) {
+  const now = performance.now();
+  if (!force && now - me.lastSend < 80) return; // ~12/s
+  me.lastSend = now;
+  net.me.set("p", JSON.stringify({ x: Math.round(me.x), y: Math.round(me.y), a: +me.a.toFixed(2), hp: me.hp, dead: me.dead, shield: me.shield, vx: Math.round(me.vx), vy: Math.round(me.vy) }));
+}
+
+// ── DRAW ────────────────────────────────────────────────────────────────────────────
+const cv = document.getElementById("game"), ctx = cv.getContext("2d");
+let W = 0, H = 0, DPR = 1;
+function fit() { DPR = Math.min(2, devicePixelRatio || 1); W = innerWidth; H = innerHeight; cv.width = W * DPR; cv.height = H * DPR; }
+addEventListener("resize", fit); addEventListener("orientationchange", fit); fit();
+const cam = { x: MAP.w / 2, y: MAP.h / 2, shake: 0 };
+const zoom = () => (ATTRACT ? W / 1000 : Math.min(W / 640, Math.sqrt((W * H) / (950 * 600)))); // how much of the arena fits on screen
+const views = new Map(); // id -> { x, y, a, hp, dead, firedAt }: everyone else, eased toward their latest state
+
+function syncViews(dt) {
+  const k = 1 - Math.pow(0.00002, dt), seen = new Set();
+  const list = [...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([id, p]) => ({ id, ...parseOnce("p:" + id, p.p, {}) })), ...botList()];
+  for (const f of list) {
+    if (f.x === undefined) continue;
+    seen.add(f.id);
+    let v = views.get(f.id);
+    if (!v) { v = { x: f.x, y: f.y, a: f.a, hp: f.hp, dead: f.dead, firedAt: 0 }; views.set(f.id, v); }
+    const snap = Math.hypot(f.x - v.x, f.y - v.y) > 200 || (f.bot && host.acting); // respawned, or the host's own bots
+    v.x += (f.x - v.x) * (snap ? 1 : k); v.y += (f.y - v.y) * (snap ? 1 : k); v.a += Math.atan2(Math.sin(f.a - v.a), Math.cos(f.a - v.a)) * (snap ? 1 : k);
+    if (f.dead && !v.dead) explode(v.x, v.y, colorOf(f.id));
+    v.dead = f.dead; v.hp = f.hp;
+  }
+  for (const id of views.keys()) if (!seen.has(id)) views.delete(id);
+}
+const colorOf = (id) => (fighters().find((f) => f.id === id) || {}).color || "#fff";
+function explode(x, y, color) { burst(x, y, color, 40, 460, 7); burst(x, y, "#ffffff", 14, 240, 4); rings.push({ x, y, t: 0, color }); }
+const rings = [];
+
+function draw(t) {
+  const z = zoom();
+  // follow me, but never show much past the walls
+  cam.x += (me.x - cam.x) * (ATTRACT ? 0.06 : 0.12); cam.y += (me.y - cam.y) * (ATTRACT ? 0.06 : 0.12); cam.shake *= 0.9;
+  for (const [k, size, view] of [["x", MAP.w, W / z], ["y", MAP.h, H / z]]) cam[k] = view >= size + 120 ? size / 2 : Math.max(view / 2 - 60, Math.min(size - view / 2 + 60, cam[k]));
+  const sx = (Math.random() - 0.5) * cam.shake, sy = (Math.random() - 0.5) * cam.shake;
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0); ctx.fillStyle = "#070914"; ctx.fillRect(0, 0, W, H);
+  ctx.setTransform(DPR * z, 0, 0, DPR * z, DPR * (W / 2 - cam.x * z + sx), DPR * (H / 2 - cam.y * z + sy));
+  // floor and grid
+  ctx.fillStyle = "#11163a"; ctx.fillRect(0, 0, MAP.w, MAP.h);
+  ctx.strokeStyle = "#ffffff10"; ctx.lineWidth = 2; ctx.beginPath();
+  for (let g = 50; g < MAP.w; g += 50) { ctx.moveTo(g, 0); ctx.lineTo(g, MAP.h); }
+  for (let g = 50; g < MAP.h; g += 50) { ctx.moveTo(0, g); ctx.lineTo(MAP.w, g); }
+  ctx.stroke();
+  ctx.strokeStyle = "#4cc9f0"; ctx.lineWidth = 6; ctx.strokeRect(-3, -3, MAP.w + 6, MAP.h + 6);
+  // walls: a soft glow, a dark block, a bright rim
+  for (const [x, y, w, h] of MAP.walls) {
+    ctx.fillStyle = "#4cc9f01c"; ctx.fillRect(x - 10, y - 10, w + 20, h + 20);
+    ctx.fillStyle = "#1c2350"; ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = "#5bd3ff"; ctx.lineWidth = 3; ctx.strokeRect(x + 1.5, y + 1.5, w - 3, h - 3);
+  }
+  // bullets: a colored streak with a white core
+  ctx.lineCap = "round";
+  for (const b of bullets) {
+    const tx = b.x - Math.cos(b.a) * 30, ty = b.y - Math.sin(b.a) * 30;
+    ctx.strokeStyle = b.color; ctx.lineWidth = 9; ctx.globalAlpha = 0.55; ctx.beginPath(); ctx.moveTo(tx, ty); ctx.lineTo(b.x, b.y); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.strokeStyle = "#fff"; ctx.lineWidth = 4; ctx.beginPath(); ctx.moveTo(b.x - Math.cos(b.a) * 12, b.y - Math.sin(b.a) * 10); ctx.lineTo(b.x, b.y); ctx.stroke();
+  }
+  for (const f of fighters()) if (!f.dead) drawFighter(f, t);
+  for (let i = rings.length - 1; i >= 0; i--) {
+    const r = rings[i]; r.t += 1 / 60; if (r.t > 0.45) { rings.splice(i, 1); continue; }
+    ctx.globalAlpha = 1 - r.t / 0.45; ctx.strokeStyle = r.color; ctx.lineWidth = 5; ctx.beginPath(); ctx.arc(r.x, r.y, 20 + r.t * 220, 0, Math.PI * 2); ctx.stroke(); ctx.globalAlpha = 1;
+  }
+  for (const p of sparks) { ctx.globalAlpha = Math.min(1, p.life * 3); ctx.fillStyle = p.color; ctx.fillRect(p.x - p.size / 2, p.y - p.size / 2, p.size, p.size); }
+  ctx.globalAlpha = 1;
+  // arrows at the screen edge for fighters out of view, a red edge when I'm hurt
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  if (!ATTRACT) for (const f of fighters()) {
+    const fx = (f.x - cam.x) * z + W / 2, fy = (f.y - cam.y) * z + H / 2;
+    if (f.mine || f.dead || (fx > 0 && fx < W && fy > 0 && fy < H)) continue;
+    const a = Math.atan2(fy - H / 2, fx - W / 2), k = Math.min((W / 2 - 24) / Math.abs(Math.cos(a) || 1e-6), (H / 2 - 24) / Math.abs(Math.sin(a) || 1e-6));
+    ctx.save(); ctx.translate(W / 2 + Math.cos(a) * k, H / 2 + Math.sin(a) * k); ctx.rotate(a); ctx.fillStyle = f.color;
+    ctx.beginPath(); ctx.moveTo(11, 0); ctx.lineTo(-7, -8); ctx.lineTo(-7, 8); ctx.fill(); ctx.restore();
+  }
+  const hurt = performance.now() - me.hurtAt;
+  if (hurt < 300 && !ATTRACT) { const g = ctx.createRadialGradient(W / 2, H / 2, Math.min(W, H) * 0.3, W / 2, H / 2, Math.max(W, H) * 0.7); g.addColorStop(0, "#ff000000"); g.addColorStop(1, `rgba(255,30,60,${0.5 * (1 - hurt / 300)})`); ctx.fillStyle = g; ctx.fillRect(0, 0, W, H); }
+}
+function drawFighter(f, t) {
+  const v = f.mine ? me : views.get(f.id) || f, x = f.x, y = f.y;
+  ctx.fillStyle = "#00000055"; ctx.beginPath(); ctx.ellipse(x + 4, y + 6, R, R * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = f.color + "2a"; ctx.beginPath(); ctx.arc(x, y, R + 12, 0, Math.PI * 2); ctx.fill(); // a soft glow
+  ctx.save(); ctx.translate(x, y); ctx.rotate(f.a);
+  ctx.fillStyle = "#0b0e1c"; ctx.fillRect(2, -8, R + 17, 16); ctx.fillStyle = "#d9def2"; ctx.fillRect(4, -5, R + 13, 10); // the barrel
+  if (performance.now() - (v.firedAt || 0) < 50) { ctx.fillStyle = "#fff6c0"; ctx.beginPath(); ctx.arc(R + 20, 0, 9, 0, Math.PI * 2); ctx.fill(); }
+  ctx.fillStyle = f.color; ctx.beginPath(); ctx.arc(0, 0, R, 0, Math.PI * 2); ctx.fill();
+  ctx.lineWidth = 3; ctx.strokeStyle = "#0008"; ctx.stroke();
+  ctx.fillStyle = "#ffffffcc"; ctx.beginPath(); ctx.arc(7, -6, 4, 0, Math.PI * 2); ctx.arc(7, 6, 4, 0, Math.PI * 2); ctx.fill(); // eyes
+  ctx.restore();
+  if (f.mine) { ctx.strokeStyle = "#ffd166"; ctx.lineWidth = 2.5; ctx.beginPath(); ctx.arc(x, y, R + 7, 0, Math.PI * 2); ctx.stroke(); }
+  if (f.shield && Math.floor(t * 8) % 2) { ctx.strokeStyle = "#ffffffaa"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(x, y, R + 11, 0, Math.PI * 2); ctx.stroke(); }
+  if (ATTRACT) return;
+  ctx.fillStyle = "#0009"; ctx.fillRect(x - 20, y + R + 8, 40, 5);
+  ctx.fillStyle = f.hp > 40 ? "#06d6a0" : "#ff5d73"; ctx.fillRect(x - 20, y + R + 8, 40 * Math.max(0, f.hp) / CONFIG.hp, 5);
+  ctx.font = "600 13px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = f.mine ? "#ffd166" : "#ffffffd0";
+  ctx.fillText(f.mine ? "You" : f.name, x, y - R - 9);
+}
+
+// ── HUD & RESULTS ───────────────────────────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const feed = [];
+let board = null;
+const startedAt = performance.now();
+function hud(m) {
+  if (ATTRACT) { for (const id of ["kills", "clock", "top", "feed", "msg", "hint", "net"]) $(id).textContent = ""; return; }
+  const t = Date.now(), mine = m.scores[me.id] || 0, left = Math.max(0, m.endsAt - t);
+  $("kills").innerHTML = `${mine} kill${mine === 1 ? "" : "s"}<small>First to ${CONFIG.winKills}</small>`;
+  $("clock").textContent = m.phase === "play" ? `${Math.floor(left / 60000)}:${String(Math.floor(left / 1000) % 60).padStart(2, "0")}` : "";
+  const rows = fighters().map((f) => ({ id: f.id, name: f.mine ? "You" : f.name, k: m.scores[f.id] || 0, mine: f.mine })).sort((a, b) => b.k - a.k);
+  $("top").innerHTML = rows.slice(0, 6).map((r) => `<div class="${r.mine ? "me" : ""}"><span>${esc(r.name)}</span><span>${r.k}</span></div>`).join("");
+  $("feed").innerHTML = feed.filter((f) => performance.now() - f.at < 6000).map((f) => `<div><b style="color:${f.byColor}">${esc(f.by)}</b> ✕ ${esc(f.v)}</div>`).join("");
+  $("msg").innerHTML = me.dead && m.phase === "play" ? `Down!<small>Back in ${Math.max(0, Math.ceil((me.respawnAt - t) / 1000))}</small>` : "";
+  const touch = matchMedia("(pointer: coarse)").matches;
+  $("hint").textContent = performance.now() - startedAt < 9000 ? (touch ? "Left thumb moves · right thumb aims and shoots" : "WASD to move · aim with the mouse · hold click to shoot") : "";
+  const n = livePlayers().length;
+  $("net").textContent = net.offline ? "Offline: playing with bots" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the match" : ""}`;
+  $("over").hidden = m.phase !== "over";
+  if (m.phase === "over") {
+    $("overTitle").textContent = m.winner === me.id ? "You win!" : m.winner ? `${m.names[m.winner] || nameOf(m.winner)} wins` : "It's a draw";
+    $("overSub").textContent = `You got ${mine} kill${mine === 1 ? "" : "s"}.`;
+    const ids = [...new Set([...Object.keys(m.scores), ...fighters().map((f) => f.id)])].sort((a, b) => (m.scores[b] || 0) - (m.scores[a] || 0));
+    $("results").innerHTML = ids.map((id) => `<li class="${id === me.id ? "me" : ""}">${esc(id === me.id ? myName : m.names[id] || nameOf(id))}<span>${m.scores[id] || 0}</span></li>`).join("");
+    $("next").textContent = `Next match in ${Math.max(0, Math.ceil((m.endsAt - t) / 1000))}s`;
+    if (me.submittedFor !== m.id) { me.submittedFor = m.id; showBoard(mine); }
+  }
+}
+function showBoard(kills) {
+  const list = $("board");
+  if (!board) { list.innerHTML = "<li>Leaderboards need a connection.</li>"; return; }
+  list.innerHTML = "<li>Loading…</li>";
+  board.submit(kills).catch(() => null).then(() => board.top(10)).then(({ entries }) => {
+    list.innerHTML = entries.length ? entries.map((e) => `<li>${esc(e.username || "Player")}<span>${e.score}</span></li>`).join("") : "<li>No scores yet. You're first.</li>";
+  }).catch(() => { list.innerHTML = "<li>Couldn't load the leaderboard.</li>"; });
+}
+$("again").onclick = () => { if (isHost()) host.again = true; else net.send("again", {}); };
+let audio = null; // made on the first tap or key (browsers block sound before that)
+function sfx(kind) {
+  if (!audio || ATTRACT) return;
+  const [f0, f1, dur, vol, type] = { shot: [520, 180, 0.06, 0.03, "square"], hurt: [180, 60, 0.2, 0.1, "sawtooth"], kill: [440, 990, 0.25, 0.08, "triangle"], tick: [1400, 900, 0.04, 0.04, "square"] }[kind];
+  const t = audio.currentTime, o = audio.createOscillator(), g = audio.createGain();
+  o.type = type; o.frequency.setValueAtTime(f0, t); o.frequency.exponentialRampToValueAtTime(f1, t + dur);
+  g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+  o.connect(g).connect(audio.destination); o.start(t); o.stop(t + dur);
+}
+
+// ── INPUT ───────────────────────────────────────────────────────────────────────────
+const keys = new Set(), mouse = { x: 0, y: 0, seen: false, down: false };
+const MOVE = { w: [0, -1], arrowup: [0, -1], s: [0, 1], arrowdown: [0, 1], a: [-1, 0], arrowleft: [-1, 0], d: [1, 0], arrowright: [1, 0] };
+addEventListener("keydown", (e) => { const k = e.key.toLowerCase(); if (MOVE[k] || k === " ") e.preventDefault(); keys.add(k); });
+addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
+addEventListener("blur", () => { keys.clear(); mouse.down = false; });
+addEventListener("pointerdown", () => { try { audio ||= new AudioContext(); } catch {} }, { once: true });
+// Twin thumb sticks: touch the left half to move, the right half to aim (and shoot).
+const sticks = { move: null, aim: null };
+cv.addEventListener("pointerdown", (e) => {
+  e.preventDefault();
+  if (e.pointerType === "mouse") { if (e.button === 0) mouse.down = true; return; }
+  const side = e.clientX < innerWidth / 2 ? "move" : "aim";
+  if (sticks[side]) return;
+  sticks[side] = { id: e.pointerId, x0: e.clientX, y0: e.clientY, dx: 0, dy: 0, el: $(side === "move" ? "stickMove" : "stickAim") };
+  Object.assign(sticks[side].el.style, { left: e.clientX + "px", top: e.clientY + "px" }); sticks[side].el.hidden = false;
+});
+cv.addEventListener("pointermove", (e) => {
+  if (e.pointerType === "mouse") { mouse.x = e.clientX; mouse.y = e.clientY; mouse.seen = true; return; }
+  for (const s of Object.values(sticks)) if (s && s.id === e.pointerId) {
+    let dx = e.clientX - s.x0, dy = e.clientY - s.y0; const d = Math.hypot(dx, dy);
+    if (d > 50) { dx *= 50 / d; dy *= 50 / d; }
+    s.dx = dx; s.dy = dy; s.el.firstChild.style.transform = `translate(${dx}px, ${dy}px)`;
+  }
+});
+for (const ev of ["pointerup", "pointercancel"]) addEventListener(ev, (e) => {
+  if (e.pointerType === "mouse") { if (e.button === 0) mouse.down = false; return; }
+  for (const side of ["move", "aim"]) if (sticks[side] && sticks[side].id === e.pointerId) { sticks[side].el.hidden = true; sticks[side] = null; }
+});
+document.addEventListener("touchmove", (e) => e.preventDefault(), { passive: false });
+/** Turn keys, mouse and sticks into this frame's move, aim and trigger. */
+function readInput() {
+  input.mx = input.my = 0;
+  for (const k of keys) if (MOVE[k]) { input.mx += MOVE[k][0]; input.my += MOVE[k][1]; }
+  if (sticks.move) { input.mx = sticks.move.dx / 50; input.my = sticks.move.dy / 50; }
+  const aimLen = sticks.aim ? Math.hypot(sticks.aim.dx, sticks.aim.dy) : 0;
+  const z = zoom();
+  if (aimLen > 10) me.a = Math.atan2(sticks.aim.dy, sticks.aim.dx);
+  else if (mouse.seen && !sticks.move) me.a = Math.atan2(cam.y + (mouse.y - H / 2) / z - me.y, cam.x + (mouse.x - W / 2) / z - me.x);
+  else if (input.mx || input.my) me.a = Math.atan2(input.my, input.mx);
+  input.fire = aimLen > 22 || mouse.down || keys.has(" ");
+}
+
+// ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
+let last = performance.now(), lastHb = 0, lastHud = 0;
+function frame(now) {
+  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
+  if (isHost()) hostTick(dt, now); else host.acting = false;
+  syncViews(dt);
+  const m = match();
+  if (!ATTRACT) readInput();
+  if (m) myTick(dt, m);
+  stepBullets(dt);
+  if (performance.now() - me.hurtAt < 30 && !ATTRACT) cam.shake = 14;
+  draw(now / 1000);
+  if (m && now - lastHud > 150) { lastHud = now; hud(m); }
+  requestAnimationFrame(frame);
+}
+
+(async function start() {
+  net = await connect();
+  net.onState((st) => { S = st; });
+  net.on("shot", (msg, from) => { if (msg && typeof msg.x === "number") addBullet(from, msg.x, msg.y, msg.a); });
+  net.on("shots", (msg) => { if (msg && Array.isArray(msg.list)) for (const [id, x, y, a] of msg.list.slice(0, 40)) addBullet(id, x, y, a); });
+  net.on("down", (msg, from) => { if (msg && msg.v) onDown(msg.v, msg.by); });
+  net.on("again", () => { if (host.acting) host.again = true; });
+  net.onDisconnect(() => { $("net").textContent = "Reconnecting…"; });
+  if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
+  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  me.id = net.sessionId; me.color = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
+  net.me.set({ n: myName, c: me.color, hb: Date.now() });
+  if (ATTRACT) Object.assign(CONFIG, { seats: 7, respawnMs: 1200, shieldMs: 600, botReact: 0.15, botFireEvery: 0.2, botRange: 1100 });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
