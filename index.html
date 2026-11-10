@@ -22,7 +22,7 @@
   #net { bottom: max(10px, env(safe-area-inset-bottom)); left: 14px; font-size: 12px; opacity: .7; }
   #over { position: fixed; inset: 0; display: grid; place-items: center; background: #070914b0; }
   #over[hidden], .stick[hidden] { display: none; }
-  .card { width: min(360px, 90vw); max-height: 86vh; overflow: auto; padding: 20px; border-radius: 16px; background: #131833; border: 1px solid #ffffff26; text-align: center; }
+  .card { box-sizing: border-box; width: min(402px, calc(100vw - 32px)); max-height: 86vh; overflow: auto; padding: 20px; border-radius: 16px; background: #131833; border: 1px solid #ffffff26; text-align: center; }
   .card h2 { margin: 0 0 4px; font-size: 26px; } .card h3 { margin: 14px 0 4px; font-size: 13px; color: #4cc9f0; text-align: left; }
   .card ol { margin: 0; padding-left: 24px; font-size: 14px; text-align: left; }
   .card li span { float: right; font-variant-numeric: tabular-nums; } .card li.me { color: #ffd166; font-weight: 700; }
@@ -413,11 +413,11 @@ function myTick(dt, m) {
   }
   publish(false);
 }
-/** Two people in one color: the one with the higher sessionId picks a free color. */
+/** Two people in one color: the one with the higher sessionId picks a color no person or bot has (a bot in a person's color is recolored by the host). */
 function fixColor() {
   const others = Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId);
   if (!others.some(([id, p]) => p.c === me.color && id < net.sessionId)) return;
-  const taken = new Set(others.map(([, p]) => p.c)), free = COLORS.find((c) => !taken.has(c));
+  const taken = new Set([...others.map(([, p]) => p.c), ...botList().map((b) => b.color)]), free = COLORS.find((c) => !taken.has(c));
   if (free) { me.color = free; net.me.set("c", free); }
 }
 function publish(force) {
@@ -528,6 +528,7 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const feed = [];
 let board = null;
 const startedAt = performance.now();
+let dropped = false; // true while the connection is down: the HUD keeps showing "Reconnecting…"
 function hud(m) {
   if (ATTRACT) { for (const id of ["kills", "clock", "top", "feed", "msg", "hint", "net"]) $(id).textContent = ""; return; }
   const t = Date.now(), mine = m.scores[me.id] || 0, left = Math.max(0, m.endsAt - t);
@@ -540,7 +541,7 @@ function hud(m) {
   const touch = matchMedia("(pointer: coarse)").matches;
   $("hint").textContent = performance.now() - startedAt < 9000 ? (touch ? "Left thumb moves · right thumb aims and shoots" : "WASD to move · aim with the mouse · hold click to shoot") : "";
   const n = livePlayers().length;
-  $("net").textContent = net.offline ? "Offline: playing with bots" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the match" : ""}`;
+  $("net").textContent = net.offline ? "Offline: playing with bots" : dropped ? "Reconnecting…" : `Online · ${n} player${n === 1 ? "" : "s"}${isHost() ? " · you run the match" : ""}`;
   $("over").hidden = m.phase !== "over";
   if (m.phase === "over") {
     $("overTitle").textContent = m.winner === me.id ? "You win!" : m.winner ? `${m.names[m.winner] || nameOf(m.winner)} wins` : "It's a draw";
@@ -616,7 +617,7 @@ function readInput() {
 // ── MAIN LOOP ───────────────────────────────────────────────────────────────────────
 let last = performance.now(), lastHb = 0, lastHud = 0;
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const dt = Math.max(0, Math.min(0.05, (now - last) / 1000)); last = now; // never negative: the first frame can be stamped before `last`
   if (now - lastHb > 1000) { lastHb = now; net.me.set("hb", Date.now()); fixColor(); }
   if (isHost()) hostTick(dt, now); else host.acting = false;
   syncViews(dt);
@@ -637,9 +638,10 @@ function frame(now) {
   net.on("shots", (msg) => { if (msg && Array.isArray(msg.list)) for (const [id, x, y, a] of msg.list.slice(0, 40)) addBullet(id, x, y, a); });
   net.on("down", (msg, from) => { if (msg && msg.v) onDown(msg.v, msg.by); });
   net.on("again", () => { if (host.acting) host.again = true; });
-  net.onDisconnect(() => { $("net").textContent = "Reconnecting…"; });
+  net.onDisconnect(() => { dropped = true; $("net").textContent = "Reconnecting…"; });
+  net.onReconnect(() => { dropped = false; });
   if (!net.offline && typeof MP !== "undefined") board = MP.auth({ key: MP_CONNECT.key, apiUrl: MP_CONNECT.apiUrl }).leaderboard(CONFIG.board);
-  const taken = new Set(Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c));
+  const taken = new Set([...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([, p]) => p.c), ...parse(S.shared.bots, []).map((b) => b.color)]);
   me.id = net.sessionId; me.color = COLORS.find((c) => !taken.has(c)) || COLORS[Math.floor(Math.random() * COLORS.length)];
   net.me.set({ n: myName, c: me.color, hb: Date.now() });
   if (ATTRACT) Object.assign(CONFIG, { seats: 7, respawnMs: 1200, shieldMs: 600, botReact: 0.15, botFireEvery: 0.2, botRange: 1100 });
