@@ -315,6 +315,7 @@ function stepBot(b, dt, all, t) {
   const len = Math.hypot(mx, my) || 1, px = b.x, py = b.y;
   b.x += mx / len * CONFIG.speed * 0.82 * dt; b.y += my / len * CONFIG.speed * 0.82 * dt;
   pushOut(b);
+  if (dt > 0) { b.vx = (b.x - px) / dt; b.vy = (b.y - py) / dt; } // other screens glide the bot along this, and bots lead their shots with it
   if (Math.hypot(b.x - px, b.y - py) < CONFIG.speed * 0.2 * dt) b.wp = openSpot(); // stuck on a wall: go somewhere else
 }
 function openSpot() { for (;;) { const p = { x: 60 + Math.random() * (MAP.w - 120), y: 60 + Math.random() * (MAP.h - 120) }; if (!inWall(p.x, p.y, R + 6)) return p; } }
@@ -335,7 +336,7 @@ function hostTick(dt, now) {
   for (const b of host.bots.values()) stepBot(b, dt, all, t);
   if (now - host.lastBots > 100) { // ~10/s, one message for every bot
     host.lastBots = now;
-    net.setShared("bots", JSON.stringify(botList().map((b) => ({ id: b.id, name: b.name, color: b.color, x: Math.round(b.x), y: Math.round(b.y), a: +b.a.toFixed(2), hp: b.hp, dead: b.dead, shield: b.shield }))));
+    net.setShared("bots", JSON.stringify(botList().map((b) => ({ id: b.id, name: b.name, color: b.color, x: Math.round(b.x), y: Math.round(b.y), a: +b.a.toFixed(2), vx: Math.round(b.vx || 0), vy: Math.round(b.vy || 0), hp: b.hp, dead: b.dead, shield: b.shield }))));
     if (host.shots.length) { net.send("shots", { list: host.shots.splice(0, 40) }); host.shots.length = 0; }
   }
 }
@@ -377,6 +378,7 @@ function takeHit(by) {
   me.hp -= CONFIG.damage; me.hurtAt = performance.now(); sfx("hurt");
   if (me.hp <= 0) {
     Object.assign(me, { hp: 0, dead: 1, respawnAt: Date.now() + CONFIG.respawnMs });
+    explode(me.x, me.y, me.color); cam.shake = 20; // everyone else sees this burst too (syncViews)
     net.send("down", { v: me.id, by }); onDown(me.id, by);
   }
   publish(true);
@@ -439,15 +441,17 @@ const zoom = () => (ATTRACT ? W / 1000 : Math.min(W / 640, Math.sqrt((W * H) / (
 const views = new Map(); // id -> { x, y, a, hp, dead, firedAt }: everyone else, eased toward their latest state
 
 function syncViews(dt) {
-  const k = 1 - Math.pow(0.00002, dt), seen = new Set();
+  const k = 1 - Math.pow(0.00002, dt), seen = new Set(), now = performance.now();
   const list = [...Object.entries(S.entities.players || {}).filter(([id]) => id !== net.sessionId).map(([id, p]) => ({ id, ...parseOnce("p:" + id, p.p, {}) })), ...botList()];
   for (const f of list) {
     if (f.x === undefined) continue;
     seen.add(f.id);
     let v = views.get(f.id);
-    if (!v) { v = { x: f.x, y: f.y, a: f.a, hp: f.hp, dead: f.dead, firedAt: 0 }; views.set(f.id, v); }
+    if (!v) { v = { x: f.x, y: f.y, a: f.a, hp: f.hp, dead: f.dead, firedAt: 0, sx: f.x, sy: f.y, at: now }; views.set(f.id, v); }
+    if (f.x !== v.sx || f.y !== v.sy) { v.sx = f.x; v.sy = f.y; v.at = now; } // a new snapshot (they come ~10 times a second)
     const snap = Math.hypot(f.x - v.x, f.y - v.y) > 200 || (f.bot && host.acting); // respawned, or the host's own bots
-    v.x += (f.x - v.x) * (snap ? 1 : k); v.y += (f.y - v.y) * (snap ? 1 : k); v.a += Math.atan2(Math.sin(f.a - v.a), Math.cos(f.a - v.a)) * (snap ? 1 : k);
+    const ahead = f.dead ? 0 : Math.min(0.15, (now - v.at) / 1000), tx = f.x + (f.vx || 0) * ahead, ty = f.y + (f.vy || 0) * ahead; // keep gliding between snapshots
+    v.x += (tx - v.x) * (snap ? 1 : k); v.y += (ty - v.y) * (snap ? 1 : k); v.a += Math.atan2(Math.sin(f.a - v.a), Math.cos(f.a - v.a)) * (snap ? 1 : k);
     if (f.dead && !v.dead) explode(v.x, v.y, colorOf(f.id));
     v.dead = f.dead; v.hp = f.hp;
   }
@@ -580,11 +584,12 @@ addEventListener("keydown", (e) => { const k = e.key.toLowerCase(); if (MOVE[k] 
 addEventListener("keyup", (e) => keys.delete(e.key.toLowerCase()));
 addEventListener("blur", () => { keys.clear(); mouse.down = false; });
 addEventListener("pointerdown", () => { try { audio ||= new AudioContext(); } catch {} }, { once: true });
+addEventListener("contextmenu", (e) => e.preventDefault()); // no right-click menu over the game
 // Twin thumb sticks: touch the left half to move, the right half to aim (and shoot).
 const sticks = { move: null, aim: null };
 cv.addEventListener("pointerdown", (e) => {
   e.preventDefault();
-  if (e.pointerType === "mouse") { if (e.button === 0) mouse.down = true; return; }
+  if (e.pointerType === "mouse") { mouse.x = e.clientX; mouse.y = e.clientY; mouse.seen = true; if (e.button === 0) mouse.down = true; return; }
   const side = e.clientX < innerWidth / 2 ? "move" : "aim";
   if (sticks[side]) return;
   sticks[side] = { id: e.pointerId, x0: e.clientX, y0: e.clientY, dx: 0, dy: 0, el: $(side === "move" ? "stickMove" : "stickAim") };
